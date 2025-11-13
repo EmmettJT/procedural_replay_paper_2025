@@ -7,7 +7,7 @@ This repository contains the code and data necessary to reproduce the figures fr
 
 This repository includes:
 - Scripts for producing the main figures from preprocessed data.
-- A folder containing an exmaple run of the preprocessing steps
+- A folder containing an example run of the preprocessing steps
 
 ## Getting Started
 
