@@ -20,6 +20,7 @@ from itertools import combinations
 from statistics import mean
 from scipy import stats
 import h5py
+from pathlib import Path
 
 def load_h5(filename):
     """

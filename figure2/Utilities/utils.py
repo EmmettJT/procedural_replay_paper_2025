@@ -9,6 +9,61 @@ import random
 import seaborn as sns
 import matplotlib.colors as mcolors
 from tqdm import tqdm
+import h5py
+from pathlib import Path
+import ast 
+from itertools import groupby
+
+def load_h5(filename):
+    """
+    Load a dictionary saved in HDF5, recursively reconstructing:
+    - DataFrames with proper columns
+    - Nested dictionaries
+    - Lists (including 1D arrays)
+    - Bytes decoded to Python strings
+    - Numeric strings converted to floats
+    """
+    def decode_and_convert(x):
+        # Decode bytes
+        if isinstance(x, bytes):
+            x = x.decode('utf-8')
+        # Convert numeric strings to float if possible
+        if isinstance(x, str):
+            try:
+                x_float = float(x)
+                return x_float
+            except ValueError:
+                return x
+        return x
+
+    def load_item(group):
+        if isinstance(group, h5py.Group):
+            # DataFrame detection
+            if 'data' in group and 'columns' in group.attrs:
+                columns = [col.decode('utf-8') for col in group.attrs['columns']]
+                data = group['data'][()]
+                # Decode bytes and convert numeric strings
+                data = np.array([[decode_and_convert(cell) for cell in row] for row in data])
+                return pd.DataFrame(data, columns=columns)
+            else:
+                # Nested dictionary
+                return {key: load_item(group[key]) for key in group.keys()}
+        elif isinstance(group, h5py.Dataset):
+            data = group[()]
+            # Decode bytes and convert numeric strings
+            if data.dtype.kind in {'S', 'O'}:
+                data = np.array([decode_and_convert(x) for x in data.flat])
+                if data.ndim == 1:
+                    return data.tolist()  # Convert 1D arrays to list
+                return data.reshape(group.shape)
+            else:
+                return data
+        else:
+            return group
+        
+    with h5py.File(filename, 'r') as f:
+        return {key: load_item(f[key]) for key in f.keys()}
+
 
 def load_H5_bodypart(tracking_path,video_type, tracking_point):
 
@@ -477,15 +532,16 @@ def plot_tracking_aligned(data,strt_,end_,events,start_ts,end_ts, colors,max_ind
     fig, axs = plt.subplots(nrow, ncol,figsize=(15, 8))
 
     for ind, ax in enumerate(fig.axes):
-        for item in data["back_ports"]:
-            ax.plot(np.median(item['interped_x'].values),np.median(item['interped_y'].values),'o',color = 'grey', markersize = 125)
+        for i in range(5):
+            ax.plot(data["port_centroids"].x[i],data["port_centroids"].y[i],'o',color = 'grey', markersize = 125)
         for i in range(int(events)):
             ax.plot(data["back_head_centre"]['interped_x'].values[int(start_ts[i])-1:int(end_ts[i])+1],data["back_head_centre"]['interped_y'].values[int(start_ts[i])-1:int(end_ts[i])+1],'-',color =  np.array(colors)[np.array(max_index)+1][strt_:end_][i], alpha = 1)
 
-        min_x = np.median(data["back_ports"][1]['interped_x'].values) - (np.median(data["back_ports"][0]['interped_x'].values) - np.median(data["back_ports"][1]['interped_x'].values))
-        max_x = np.median(data["back_ports"][3]['interped_x'].values) + (np.median(data["back_ports"][0]['interped_x'].values) - np.median(data["back_ports"][1]['interped_x'].values))
-        min_y = np.median(data["back_ports"][2]['interped_y'].values) - (np.median(data["back_ports"][0]['interped_y'].values) - np.median(data["back_ports"][2]['interped_y'].values))
-        max_y = np.median(data["back_ports"][0]['interped_y'].values) + (np.median(data["back_ports"][0]['interped_y'].values) - np.median(data["back_ports"][2]['interped_y'].values))
+        min_x = data["port_centroids"].x[1] - (data["port_centroids"].x[0] - data["port_centroids"].x[1])
+        max_x = data["port_centroids"].x[3] + (data["port_centroids"].x[0] - data["port_centroids"].x[1])
+        min_y = data["port_centroids"].y[2] - (data["port_centroids"].y[0] - data["port_centroids"].y[2])
+        max_y = data["port_centroids"].y[0] + (data["port_centroids"].y[0] - data["port_centroids"].y[2])
+        
         ax.set_xlim(min_x,max_x)
         ax.set_ylim(min_y,max_y)
 
