@@ -23,7 +23,7 @@ import scipy
 from statsmodels.multivariate.manova import MANOVA
 import pickle
 
-def shuffle_data(t_levels,animals,categories):
+def shuffle_data(t_levels,animals,categories,pl_data):
     # Set cut-off for number of trials to consider
     cut = 4000
     # Initialize lists to store data
@@ -37,6 +37,7 @@ def shuffle_data(t_levels,animals,categories):
     # Create DataFrame with collected data
     df = pd.DataFrame({'CumTrials': cum_trials, 'Level': new, 'Group': group, 'ID': animalid})
     # Define function to generate experimental group labels
+    hue_order = ['red', 'green']
     def generate_eg(list_size, prob, hue_order):
         return [hue_order[0] if random.random() < prob else hue_order[1] for _ in range(list_size)]
     # define a 100-trial window to bin the data
