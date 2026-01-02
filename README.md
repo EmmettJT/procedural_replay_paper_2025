@@ -7,8 +7,6 @@ Note:
 - Example data and preprocessing scripts are provided to outline data analysis pipelines prior to plotting. 
 
 
-
-
 ![Replay Example](images/replay_exmaple.png)
 ## Overview
 
