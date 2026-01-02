@@ -2,6 +2,10 @@
 
 This repository contains the code and data necessary to reproduce the figures from our publication: [Replay of Procedural Experience is Independent of the Hippocampus](https://www.biorxiv.org/content/10.1101/2024.06.05.597547v1.full.pdf).
 
+Note:
+- Plotting data are minimal (to save storage space) but sufficent to reproduce figures from the text. 
+- Example data and preprocessing scripts are provided to outline data analysis pipelines prior to plotting. 
+---------------------------------------------------------------------------------------------------------
 ![Replay Example](images/replay_exmaple.png)
 ## Overview
 
