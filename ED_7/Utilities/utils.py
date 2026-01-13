@@ -1,25 +1,71 @@
-import pickle
-import matplotlib.pyplot as plt
-import pandas as pd
+import pickle 
 import numpy as np
-from scipy.spatial.distance import pdist, squareform
-from skbio.stats.distance import DistanceMatrix, permanova
-from scipy.stats import shapiro, normaltest
-from itertools import combinations
-from statsmodels.stats.multitest import multipletests
+import matplotlib.pyplot as plt
+import os
 import scipy
-from scipy.stats import shapiro
-from scipy.stats import ttest_1samp
 from scipy import stats
 import pingouin as pg
-import seaborn as sns 
+import pandas as pd
+from scipy.stats import shapiro
+from scipy.stats import ttest_1samp
+from itertools import combinations
+from skbio import DistanceMatrix
+from skbio.stats.distance import permanova
+from statsmodels.stats.multitest import multipletests
+from scipy.spatial.distance import pdist, squareform
+import seaborn as sns
 import statsmodels.api as sm
 from statsmodels.multivariate.manova import MANOVA
-import math 
 from collections import defaultdict
 from pathlib import Path
 import h5py
+from collections import defaultdict
 import os
+
+def words_to_number(s):
+    """
+    Convert words like 'one', 'twenty_one', 'thirty_five' back to integer.
+    Supports 1–99.
+    """
+    ones = {
+        'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+        'six': 6, 'seven': 7, 'eight': 8, 'nine': 9,
+        'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13,
+        'fourteen': 14, 'fifteen': 15, 'sixteen': 16, 'seventeen': 17,
+        'eighteen': 18, 'nineteen': 19
+    }
+    tens = {
+        'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50,
+        'sixty': 60, 'seventy': 70, 'eighty': 80, 'ninety': 90
+    }
+
+    if '_' in s:
+        t, o = s.split('_')
+        return tens[t] + ones[o]
+    if s in ones:
+        return ones[s]
+    if s in tens:
+        return tens[s]
+    raise ValueError(f"Cannot convert word '{s}' to number")
+
+def convert_word_keys_to_numeric(d):
+    """
+    Recursively convert dict keys from words back to numeric keys.
+    """
+    if isinstance(d, dict):
+        new_dict = {}
+        for k, v in d.items():
+            # Only convert keys that are words
+            try:
+                new_key = words_to_number(k)
+            except ValueError:
+                new_key = k  # leave non-numeric-word keys unchanged
+            new_dict[new_key] = convert_word_keys_to_numeric(v)
+        return new_dict
+    elif isinstance(d, list):
+        return [convert_word_keys_to_numeric(x) for x in d]
+    else:
+        return d
 
 def load_h5(filename):
     def decode_and_convert(x):
@@ -125,254 +171,45 @@ def convert_word_keys_to_numeric(d):
         return d
     
 
-def permanova_ordered_misordered(nrem, rem):
 
-    df = pd.DataFrame(nrem + rem, columns=['ordered','misordered'])
-    df['group'] = ['nrem']*len(nrem) + ['rem']*len(rem)
+def manova_groups_neuron_involvement(data1,data2):
 
-    # drop any NaNs
-    df = df.dropna()
+    nrem_means = []
+    for key in data1:
+        if len(data1[key]) > 0:
+            nrem_means += [np.nanmean(data1[key])]
+    rem_means = []       
+    for key in data2:
+        if len(data2[key]) > 0:
+            rem_means += [np.nanmean(data2[key])]
 
-    # compute distance matrix
-    dm = DistanceMatrix(
-        squareform(pdist(df[['ordered','misordered']].values, 'euclidean'))
-    )
+    x = nrem_means
+    y = sorted(data1)
 
-    # run PERMANOVA
-    res = permanova(dm, grouping=df['group'].tolist(), permutations=999)
-    print(res)
+    x2 = rem_means
+    y2 = sorted(data2)
+
+    import statsmodels.api as sm
+    from statsmodels.multivariate.manova import MANOVA
+
+    A = pd.DataFrame({'x': x,
+                    'y': y,
+                    'groups': ['A'] * len(x)})
+    B = pd.DataFrame({'x': x2,
+                    'y': y2,
+                    'groups': ['B'] * len(x2)})
+    # Combine the data into one DataFrame
+    data = pd.concat([A, B], axis=0)
+
+
+    # Perform MANOVA
+    manova = MANOVA.from_formula('x + y ~ groups', data=data)
+
+    # Print the MANOVA results
+    print(manova.mv_test())
     
-    #Compute R² manually (effect size)
-    # ss_total = sum of squared distances / n
-    D = dm.data        # <-- this is the fix
-    n = len(df['group'].tolist())
-    ss_total = np.sum(D**2) / n
-
-    # ss_between: sum of squared group means
-    group_labels = np.array(df['group'].tolist())
-    unique_groups = np.unique(group_labels)
-    ss_between = 0
-    for g in unique_groups:
-        idx = np.where(group_labels == g)[0]
-        Di = D[np.ix_(idx, idx)]
-        ss_between += len(idx) * (Di.mean() ** 2)
-
-    r2 = ss_between / ss_total
-    print(f"PERMANOVA effect size R²: {r2:.5f}")
+    return manova.mv_test()
     
-
-
-def plot_ordered_misrodered(nrem_ordered_misordered,var_string,var_string2, color_):
-
-    ordered = [item[0] for item in nrem_ordered_misordered]
-    misordered = [item[1] for item in nrem_ordered_misordered]
-
-    fig, ax = plt.subplots(figsize=(2, 5))
-
-    ax.plot(np.zeros(len(ordered)), ordered, 'o', color = color_,alpha = 0.4, markeredgewidth = 0, markersize = 9)
-    ax.boxplot([x for x in ordered if not np.isnan(x)], positions=[0.3], widths=0.1, patch_artist=True, boxprops=dict(facecolor=color_, color=color_), medianprops=dict(color='#FED163'))
-    ax.plot(np.ones(len(misordered)), misordered, 'o', color = color_,alpha = 0.4, markeredgewidth = 0, markersize = 9)
-    ax.boxplot([x for x in misordered if not np.isnan(x)], positions=[0.7], widths=0.1, patch_artist=True, boxprops=dict(facecolor=color_, color=color_), medianprops=dict(color='#FED163'))
-
-    ax.set_ylabel(var_string2)
-    
-    ax.set_title(var_string)
-    ax.set_ylim(0, 1)
-    
-
-def cohens_d(x, y):
-    """
-    Compute Cohen's d for two independent samples.
-    """
-    x = np.array(x)
-    y = np.array(y)
-    nx = len(x)
-    ny = len(y)
-    # Pooled standard deviation
-    pooled_std = np.sqrt(((nx-1)*x.std(ddof=1)**2 + (ny-1)*y.std(ddof=1)**2) / (nx + ny - 2))
-    d = (x.mean() - y.mean()) / pooled_std
-    return d
-
-def permutation_test(list1, list2):
-    # Define your test statistic function
-    def test_statistic(list1, list2):
-        return np.mean(list1) - np.mean(list2)
-
-    # Compute the observed test statistic
-    observed_statistic = test_statistic(list1, list2)
-
-    # Combine the two lists
-    combined_data = list1 + list2
-
-    # Number of permutations
-    num_permutations = 100000
-
-    # Initialize an array to store the permuted test statistics
-    permuted_statistics = np.zeros(num_permutations)
-
-    # Permutation test
-    for i in range(num_permutations):
-        # Shuffle the combined data
-        np.random.shuffle(combined_data)
-        
-        # Split the shuffled data back into two lists
-        permuted_list1 = combined_data[:len(list1)]
-        permuted_list2 = combined_data[len(list1):]
-        
-        # Compute the test statistic for the permuted data
-        permuted_statistics[i] = test_statistic(permuted_list1, permuted_list2)
-
-    # Calculate the p-value
-    p_value = np.mean(permuted_statistics >= observed_statistic)
-
-
-    plt.figure(figsize=(4, 3))
-    plt.hist(permuted_statistics, bins=30, alpha=0.5, color='blue', edgecolor='black')
-    plt.axvline(observed_statistic, color='red', linestyle='dashed', linewidth=2, label='Observed Statistic')
-    plt.xlabel('Test Statistic')
-    plt.ylabel('Frequency')
-    plt.title('Distribution of Permuted Test Statistics')
-    plt.axvline(np.percentile(permuted_statistics, 97.5), color='green', linestyle='dashed', linewidth=2, label='95th Percentile')
-    plt.axvline(np.percentile(permuted_statistics, 2.5), color='green', linestyle='dashed', linewidth=2)
-    plt.axvline(np.percentile(permuted_statistics, 99), color='green', linestyle='dashed', linewidth=2, label='99th Percentile')
-    plt.axvline(np.percentile(permuted_statistics, 1), color='green', linestyle='dashed', linewidth=2)
-    plt.xlabel('Test Statistic')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-    
-
-    print("- p-value:", p_value)
-    print('- 99th percentile of permuted statistics:',np.percentile(permuted_statistics, 99))
-    print("- Observed Test Statistic:", observed_statistic)
-
-
-# ---------- helpers ----------
-def collapse(freqs, cap=6):
-    out = defaultdict(list)
-    for k, v in freqs.items():
-        out[str(cap if int(k) >= cap else int(k))].extend(v)
-    return out
-
-def plot_group(ax, counts, keys, x_offset, color, stat_fn):
-    for k in keys:
-        y = counts[k]
-        x = float(k) + x_offset
-        ax.plot(np.full(len(y), x), y, 'o',
-                c=color, alpha=0.5, ms=9, mew=0)
-        ax.plot(x, stat_fn(y), '<',
-                c=color, alpha=0.8, ms=9, mew=0)
-
-def poisson_probability(rate, k):
-    """Calculate Poisson probability of k events occurring given the rate."""
-    return math.exp(-rate) * (rate ** k) / math.factorial(k)
-
-def calculate_probabilities(rate_per_second, event_length_s):
-    # Convert event length from milliseconds to seconds
-    
-    # Calculate the rate per 0.3 seconds considering event length
-    rate_per_0p3_seconds = rate_per_second *(0.3 + event_length_s)
-    
-    results = {}
-    total_probability = 0  # Variable to store the total probability
-    
-    for k in range(1, 7):  # Include probabilities for 1 to 6 events
-        probability = poisson_probability(rate_per_0p3_seconds, k)
-        results[k] = probability
-        total_probability += probability  # Add probability to the total
-    
-    # Calculate percentages
-    percentages = {k: (probability / total_probability) * 100 for k, probability in results.items()}
-    
-    return rate_per_0p3_seconds, results, percentages
-
-
-# Function to compute partial eta-squared from Wilks' Lambda
-def compute_partial_eta_squared(manova_results):
-    eta_dict = {}
-    for effect, stats in manova_results.results.items():
-        # Use the current effect, not always 'group'
-        wilks_lambda = stats['stat'].loc["Wilks' lambda", 'Value']
-        eta_p2 = 1 - wilks_lambda
-        eta_dict[effect] = eta_p2
-    return eta_dict
-
-
-def extract_start_end_points(start_end_df):
-    all_chunk_forward_start_mean = []
-    all_chunk_forward_end_mean = []
-    all_chunk_reverse_start_mean = []
-    all_chunk_reverse_end_mean = []
-
-    # s_o_d = []
-    for mouse,group in start_end_df.groupby('mouse'):
-        chunk_forward_start_mean = []
-        chunk_forward_end_mean = []
-        chunk_reverse_start_mean = []
-        chunk_reverse_end_mean = []
-        for diff, chunk in group.groupby('chunk_number'):
-            forward_chunk = chunk[chunk.label == 'forward']
-            chunk_forward_start_mean += [np.mean(forward_chunk[forward_chunk.group == 'starts']['distances (%)'].values)]
-            chunk_forward_end_mean += [np.mean(forward_chunk[forward_chunk.group == 'ends']['distances (%)'].values)]
-
-            reverse_chunk = chunk[chunk.label == 'reverse']
-            chunk_reverse_start_mean += [np.mean(reverse_chunk[reverse_chunk.group == 'starts']['distances (%)'].values)]
-            chunk_reverse_end_mean += [np.mean(reverse_chunk[reverse_chunk.group == 'ends']['distances (%)'].values)]
-
-        all_chunk_forward_start_mean += [np.mean(chunk_forward_start_mean)]
-        all_chunk_forward_end_mean += [np.mean(chunk_forward_end_mean)]
-        all_chunk_reverse_start_mean += [np.mean(chunk_reverse_start_mean)]
-        all_chunk_reverse_end_mean += [np.mean(chunk_reverse_end_mean)]
-        
-    return all_chunk_reverse_start_mean, all_chunk_forward_start_mean, all_chunk_reverse_end_mean, all_chunk_forward_end_mean
-
-
-def plot_start_end_times(e_all_chunk_reverse_start_mean,e_all_chunk_forward_start_mean,e_all_chunk_reverse_end_mean,e_all_chunk_forward_end_mean,ax,ax2,var_str, color_):
-        
-    ## plot forward start and ends
-
-    ax.plot(np.array(e_all_chunk_reverse_start_mean),np.ones(len(e_all_chunk_reverse_start_mean))*0.3,'o', color = color_, alpha = 0.5,markeredgewidth = 0, markersize = 9)
-
-    ax.plot(np.array(e_all_chunk_reverse_end_mean),np.ones(len(e_all_chunk_reverse_end_mean))*0.7,'o', color = color_, alpha = 0.5,markeredgewidth = 0, markersize = 9)
-
-
-    groups =  ['starts'] * len(e_all_chunk_reverse_start_mean) + (['ends'] * len(e_all_chunk_reverse_end_mean)) 
-    data =  e_all_chunk_reverse_start_mean +e_all_chunk_reverse_end_mean
-
-    if len(data) > 0:
-        forward_plt_df = pd.DataFrame({'group':groups,'distances (%)': data })
-        ax=sns.boxplot( x = 'distances (%)', y = 'group', data = forward_plt_df, color = color_, width = .2, zorder = 10,\
-                    showcaps = True, boxprops = {'facecolor':'none', "zorder":10},\
-                    showfliers=False, whiskerprops = {'linewidth':2, "zorder":10},\
-                       saturation = 1, orient = 'h',ax = ax)
-        ax.set_xlabel('realtive start point')
-        ax.set_title(var_str + '    reverse')
-
-    ax.set_xlim(0,100)
-
-    ###########
-
-    ax2.plot(np.array(e_all_chunk_forward_start_mean),np.ones(len(e_all_chunk_forward_start_mean))*0.3,'o', color = color_, alpha = 0.5,markeredgewidth = 0, markersize = 9)
-
-    ax2.plot(np.array(e_all_chunk_forward_end_mean),np.ones(len(e_all_chunk_forward_end_mean))*0.7,'o', color = color_, alpha = 0.5,markeredgewidth = 0, markersize = 9)
-
-
-    groups =  ['starts'] * len(e_all_chunk_forward_start_mean) + (['ends'] * len(e_all_chunk_forward_end_mean)) 
-    data =  e_all_chunk_forward_start_mean +e_all_chunk_forward_end_mean
-
-    if len(data) > 0:
-        forward_plt_df = pd.DataFrame({'group':groups,'distances (%)': data })
-        ax=sns.boxplot( x = 'distances (%)', y = 'group', data = forward_plt_df, color = 'blue', width = .2, zorder = 10,\
-                    showcaps = True, boxprops = {'facecolor':'none', "zorder":10},\
-                    showfliers=False, whiskerprops = {'linewidth':2, "zorder":10},\
-                       saturation = 1, orient = 'h',ax = ax2)
-
-
-        ax2.set_xlabel('realtive start point')
-        ax2.set_title(var_str + '    forward')
-
-
-    ax2.set_xlim(0,100)
 
 def return_binned_neuron_awake_sleep_rel(awake_dat,sleep_dat):
     awake_sleep_relationship = {}
@@ -395,6 +232,7 @@ def return_binned_neuron_awake_sleep_rel(awake_dat,sleep_dat):
 
     return awake_sleep_relationship
 
+
 def plot_awake_sleep_relationship(awake_sleep_relationship,color_,ax):
 
     keys = []
@@ -409,7 +247,7 @@ def plot_awake_sleep_relationship(awake_sleep_relationship,color_,ax):
 
             e_means += [np.mean(a_s_relationship)]
             sem += [scipy.stats.tstd(a_s_relationship)]
-    ax.plot(sorted(keys),np.array(e_means)[np.argsort(keys)],'o--', c = color_, alpha = 1, markeredgewidth = 0, markersize = 10)
+    ax.plot(sorted(keys),np.array(e_means)[np.argsort(keys)],'o--', c = color_, markersize = 10)
 
     upper = np.array(e_means)[np.argsort(keys)] + sem
     lower = np.array(e_means)[np.argsort(keys)] - sem
@@ -475,56 +313,207 @@ def plot_awake_sleep_relationship(awake_sleep_relationship,color_,ax):
     print(f'p-values: {p_values}')
 
 
-    # Plot the original data and the fitted curve
-    # plt.scatter(bin_centers, values, label='Data')
-    # plt.plot(bin_centers, fitted_values, label='Fitted curve', color='red', alpha = 0.4)
-    plt.xlabel('Bin Center')
-    plt.ylabel('Value')
+def plot_ordered_misrodered(nrem_ordered_misordered,var_string,var_string2):
 
-def manova_groups_neuron_involvement(data1,data2):
+    ordered = [item[0] for item in nrem_ordered_misordered]
+    misordered = [item[1] for item in nrem_ordered_misordered]
 
-    nrem_means = []
-    for key in data1:
-        if len(data1[key]) > 0:
-            nrem_means += [np.nanmean(data1[key])]
-    rem_means = []       
-    for key in data2:
-        if len(data2[key]) > 0:
-            rem_means += [np.nanmean(data2[key])]
+    fig, ax = plt.subplots(figsize=(2, 5))
 
-    x = nrem_means
-    y = sorted(data1)
+    ax.plot(np.zeros(len(ordered)), ordered, 'o', color = '#69BD45',alpha = 0.4)
+    ax.boxplot([x for x in ordered if not np.isnan(x)], positions=[0.3], widths=0.1, patch_artist=True, boxprops=dict(facecolor='#69BD45', color='#69BD45'), medianprops=dict(color='#EE7832'))
+    ax.plot(np.ones(len(misordered)), misordered, 'o', color = '#32495C',alpha = 0.4)
+    ax.boxplot([x for x in misordered if not np.isnan(x)], positions=[0.7], widths=0.1, patch_artist=True, boxprops=dict(facecolor='#32495C', color='#32495C'), medianprops=dict(color='#EE7832'))
 
-    x2 = rem_means
-    y2 = sorted(data2)
-
-    import statsmodels.api as sm
-    from statsmodels.multivariate.manova import MANOVA
-
-    A = pd.DataFrame({'x': x,
-                    'y': y,
-                    'groups': ['A'] * len(x)})
-    B = pd.DataFrame({'x': x2,
-                    'y': y2,
-                    'groups': ['B'] * len(x2)})
-    # Combine the data into one DataFrame
-    data = pd.concat([A, B], axis=0)
-
-
-    # Perform MANOVA
-    manova = MANOVA.from_formula('x + y ~ groups', data=data)
-
-    # Print the MANOVA results
-    print(manova.mv_test())
+    ax.set_ylabel(var_string2)
     
-    return manova.mv_test()
+    ax.set_title(var_string)
+    
+def cohens_d(x, y):
+    """
+    Compute Cohen's d for two independent samples.
+    """
+    x = np.array(x)
+    y = np.array(y)
+    nx = len(x)
+    ny = len(y)
+    # Pooled standard deviation
+    pooled_std = np.sqrt(((nx-1)*x.std(ddof=1)**2 + (ny-1)*y.std(ddof=1)**2) / (nx + ny - 2))
+    d = (x.mean() - y.mean()) / pooled_std
+    return d
+
+def permutation_test(list1, list2):
+    # Define your test statistic function
+    def test_statistic(list1, list2):
+        return np.mean(list1) - np.mean(list2)
+
+    # Compute the observed test statistic
+    observed_statistic = test_statistic(list1, list2)
+
+    # Combine the two lists
+    combined_data = list1 + list2
+
+    # Number of permutations
+    num_permutations = 100000
+
+    # Initialize an array to store the permuted test statistics
+    permuted_statistics = np.zeros(num_permutations)
+
+    # Permutation test
+    for i in range(num_permutations):
+        # Shuffle the combined data
+        np.random.shuffle(combined_data)
+        
+        # Split the shuffled data back into two lists
+        permuted_list1 = combined_data[:len(list1)]
+        permuted_list2 = combined_data[len(list1):]
+        
+        # Compute the test statistic for the permuted data
+        permuted_statistics[i] = test_statistic(permuted_list1, permuted_list2)
+
+    # Calculate the p-value
+    p_value = np.mean(permuted_statistics >= observed_statistic)
 
 
+    plt.figure(figsize=(4, 3))
+    plt.hist(permuted_statistics, bins=30, alpha=0.5, color='blue', edgecolor='black')
+    plt.axvline(observed_statistic, color='red', linestyle='dashed', linewidth=2, label='Observed Statistic')
+    plt.xlabel('Test Statistic')
+    plt.ylabel('Frequency')
+    plt.title('Distribution of Permuted Test Statistics')
+    plt.axvline(np.percentile(permuted_statistics, 97.5), color='green', linestyle='dashed', linewidth=2, label='95th Percentile')
+    plt.axvline(np.percentile(permuted_statistics, 2.5), color='green', linestyle='dashed', linewidth=2)
+    plt.axvline(np.percentile(permuted_statistics, 99), color='green', linestyle='dashed', linewidth=2, label='99th Percentile')
+    plt.axvline(np.percentile(permuted_statistics, 1), color='green', linestyle='dashed', linewidth=2)
+    plt.xlabel('Test Statistic')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+
+    print("- p-value:", p_value)
+    print('- 99th percentile of permuted statistics:',np.percentile(permuted_statistics, 99))
+    print("- Observed Test Statistic:", observed_statistic)
+    
+def permanova_ordered_misordered(nrem, rem):
+
+    df = pd.DataFrame(nrem + rem, columns=['ordered','misordered'])
+    df['group'] = ['nrem']*len(nrem) + ['rem']*len(rem)
+
+    # drop any NaNs
+    df = df.dropna()
+
+    # compute distance matrix
+    dm = DistanceMatrix(
+        squareform(pdist(df[['ordered','misordered']].values, 'euclidean'))
+    )
+
+    # run PERMANOVA
+    res = permanova(dm, grouping=df['group'].tolist(), permutations=999)
+    print(res)
+    
+    #Compute R² manually (effect size)
+    # ss_total = sum of squared distances / n
+    D = dm.data        # <-- this is the fix
+    n = len(df['group'].tolist())
+    ss_total = np.sum(D**2) / n
+
+    # ss_between: sum of squared group means
+    group_labels = np.array(df['group'].tolist())
+    unique_groups = np.unique(group_labels)
+    ss_between = 0
+    for g in unique_groups:
+        idx = np.where(group_labels == g)[0]
+        Di = D[np.ix_(idx, idx)]
+        ss_between += len(idx) * (Di.mean() ** 2)
+
+    r2 = ss_between / ss_total
+    print(f"PERMANOVA effect size R²: {r2:.5f}")
+
+
+# ------------------------------------------------------------
+def collapse(freqs, cap=6):
+    # force presence of all bins
+    out = {str(i): [] for i in range(1, cap + 1)}
+
+    for k, v in freqs.items():
+        kk = str(cap if int(k) >= cap else int(k))
+        out[kk].extend(v)
+
+    return out
+
+
+# ------------------------------------------------------------
+def plot_group(ax, counts, keys, x_offset, color, stat_fn):
+    for k in keys:
+        y = counts[k]
+        if len(y) == 0:
+            continue
+
+        if sum(y) == 0:
+            continue
+        x = float(k) + x_offset
+        ax.plot(np.full(len(y), x), y, 'o',
+                c=color, alpha=0.5, ms=9, mew=0)
+        ax.plot(x, stat_fn(y), '<',
+                c=color, alpha=0.8, ms=9, mew=0)
+
+
+# ------------------------------------------------------------
+def permanova_coactive_freqs(dat1, dat2, cap=6):
+    keys = [str(i) for i in range(1, cap + 1)]
+
+    n1 = len(dat1['1'])
+    n2 = len(dat2['1'])
+
+    df = pd.DataFrame()
+    df['groups'] = ['control'] * n1 + ['lesion'] * n2
+
+    for k in keys:
+        v1 = dat1.get(k, []).copy()
+        v2 = dat2.get(k, []).copy()
+
+        v1 += [0] * (n1 - len(v1))
+        v2 += [0] * (n2 - len(v2))
+
+        df[k] = v1 + v2
+
+    values = df[keys].values
+    grouping = df['groups'].values
+
+    pairwise_distances = pdist(values, metric='euclidean')
+    dm = DistanceMatrix(squareform(pairwise_distances))
+
+    results = permanova(dm, grouping, permutations=10000)
+    print(results)
+
+    # --------------------------------------------------------
+    # Effect size R² (distance-based)
+    # --------------------------------------------------------
+    D = dm.data
+    n = len(grouping)
+    ss_total = np.sum(D ** 2) / n
+
+    ss_between = 0
+    for g in np.unique(grouping):
+        idx = np.where(grouping == g)[0]
+        Di = D[np.ix_(idx, idx)]
+        ss_between += len(idx) * (Di.mean() ** 2)
+
+    r2 = ss_between / ss_total
+
+    print('***************************************************')
+    print(f"PERMANOVA effect size R²: {r2:.5f}")
+    
 def permanova_coactive_freqs(dat1, dat2):
     df = pd.DataFrame()
     df['groups'] = ['control']*len(dat1[1])  + ['lesion']*len(dat2[1])
 
-    for key in dat1:
+    for key in [1,2,3,4,5,6]:
+        if key not in dat1:
+            dat1[key] = [0]
+        if key not in dat2:
+            dat2[key] = [0]
         current_var = dat1[key]
         while len(current_var)<len(dat1[1]):
             current_var +=[0]
@@ -552,7 +541,7 @@ def permanova_coactive_freqs(dat1, dat2):
     # Perform PERMANOVA
     results = permanova(dm, grouping, permutations=10000)
     print(results)
-
+    
     #Compute R² manually (effect size)
     # ss_total = sum of squared distances / n
     D = dm.data        # <-- this is the fix
@@ -569,9 +558,74 @@ def permanova_coactive_freqs(dat1, dat2):
         ss_between += len(idx) * (Di.mean() ** 2)
 
     r2 = ss_between / ss_total
-
-    print('***************************************************')
     print(f"PERMANOVA effect size R²: {r2:.5f}")
+
+
+
+
+def extract_start_end_points(start_end_df):
+    all_chunk_forward_start_mean = []
+    all_chunk_forward_end_mean = []
+    all_chunk_reverse_start_mean = []
+    all_chunk_reverse_end_mean = []
+
+    # s_o_d = []
+    for mouse,group in start_end_df.groupby('mouse'):
+        chunk_forward_start_mean = []
+        chunk_forward_end_mean = []
+        chunk_reverse_start_mean = []
+        chunk_reverse_end_mean = []
+        for diff, chunk in group.groupby('chunk_number'):
+            forward_chunk = chunk[chunk.label == 'forward']
+            chunk_forward_start_mean += [np.mean(forward_chunk[forward_chunk.group == 'starts']['distances (%)'].values)]
+            chunk_forward_end_mean += [np.mean(forward_chunk[forward_chunk.group == 'ends']['distances (%)'].values)]
+
+            reverse_chunk = chunk[chunk.label == 'reverse']
+            chunk_reverse_start_mean += [np.mean(reverse_chunk[reverse_chunk.group == 'starts']['distances (%)'].values)]
+            chunk_reverse_end_mean += [np.mean(reverse_chunk[reverse_chunk.group == 'ends']['distances (%)'].values)]
+
+        all_chunk_forward_start_mean += [np.mean(chunk_forward_start_mean)]
+        all_chunk_forward_end_mean += [np.mean(chunk_forward_end_mean)]
+        all_chunk_reverse_start_mean += [np.mean(chunk_reverse_start_mean)]
+        all_chunk_reverse_end_mean += [np.mean(chunk_reverse_end_mean)]
+        
+    return all_chunk_reverse_start_mean, all_chunk_forward_start_mean, all_chunk_reverse_end_mean, all_chunk_forward_end_mean
+
+
+def plot_start_end_times(e_all_chunk_reverse_start_mean,e_all_chunk_forward_start_mean,e_all_chunk_reverse_end_mean,e_all_chunk_forward_end_mean,ax,ax2,var_str, color_):
+        
+    ## plot forward start and ends
+    ax.plot(np.array(e_all_chunk_reverse_start_mean),np.ones(len(e_all_chunk_reverse_start_mean))*0.3,'o', color = color_, alpha = 0.5,markeredgewidth = 0, markersize = 9)
+    ax.plot(np.array(e_all_chunk_reverse_end_mean),np.ones(len(e_all_chunk_reverse_end_mean))*0.7,'o', color = color_, alpha = 0.5,markeredgewidth = 0, markersize = 9)
+    groups =  ['starts'] * len(e_all_chunk_reverse_start_mean) + (['ends'] * len(e_all_chunk_reverse_end_mean)) 
+    data =  e_all_chunk_reverse_start_mean +e_all_chunk_reverse_end_mean
+
+    if len(data) > 0:
+        forward_plt_df = pd.DataFrame({'group':groups,'distances (%)': data })
+        ax=sns.boxplot( x = 'distances (%)', y = 'group', data = forward_plt_df, color = color_, width = .2, zorder = 10,\
+                    showcaps = True, boxprops = {'facecolor':'none', "zorder":10},\
+                    showfliers=False, whiskerprops = {'linewidth':2, "zorder":10},\
+                       saturation = 1, orient = 'h',ax = ax)
+        ax.set_xlabel('realtive start point')
+        ax.set_title(var_str + '    reverse')
+
+    ax.set_xlim(0,100)
+    ###########
+
+    ax2.plot(np.array(e_all_chunk_forward_start_mean),np.ones(len(e_all_chunk_forward_start_mean))*0.3,'o', color = color_, alpha = 0.5,markeredgewidth = 0, markersize = 9)
+    ax2.plot(np.array(e_all_chunk_forward_end_mean),np.ones(len(e_all_chunk_forward_end_mean))*0.7,'o', color = color_, alpha = 0.5,markeredgewidth = 0, markersize = 9)
+    groups =  ['starts'] * len(e_all_chunk_forward_start_mean) + (['ends'] * len(e_all_chunk_forward_end_mean)) 
+    data =  e_all_chunk_forward_start_mean +e_all_chunk_forward_end_mean
+
+    if len(data) > 0:
+        forward_plt_df = pd.DataFrame({'group':groups,'distances (%)': data })
+        ax=sns.boxplot( x = 'distances (%)', y = 'group', data = forward_plt_df, color = 'blue', width = .2, zorder = 10,\
+                    showcaps = True, boxprops = {'facecolor':'none', "zorder":10},\
+                    showfliers=False, whiskerprops = {'linewidth':2, "zorder":10},\
+                       saturation = 1, orient = 'h',ax = ax2)
+        ax2.set_xlabel('realtive start point')
+        ax2.set_title(var_str + '    forward')
+    ax2.set_xlim(0,100)
 
 # Function to compute partial eta-squared from Wilks' Lambda
 def compute_partial_eta_squared(manova_results):
@@ -584,7 +638,7 @@ def compute_partial_eta_squared(manova_results):
     return eta_dict
 
 def plot_decay(nrem_binned_rate,nrem_bins_relative_so,rem_binned_rate,rem_bins_relative_so,color_1, color_2, title_):
-    fig,ax = plt.subplots(1, 1,figsize=(10, 5))
+    fig,ax = plt.subplots(1, 1,figsize=(7, 5))
     AA_rate = []
     AA_post_so_time = []
     times = []
@@ -598,7 +652,7 @@ def plot_decay(nrem_binned_rate,nrem_bins_relative_so,rem_binned_rate,rem_bins_r
             across_chunks_y += [np.mean(chunk_item)]
         AA_rate+=[across_chunks_y]
         AA_post_so_time+=[across_chunks_x]
-        ax.plot(across_chunks_x,across_chunks_y, '-o',c = color_1, markersize = 10, markeredgewidth = 0, alpha = 0.8)
+        ax.plot(across_chunks_x,across_chunks_y, '-o',c = color_1, alpha = 1, markersize = 10, markeredgewidth = 0)
         # save out stuff for plot 2
         rate_change_per_min = np.diff(across_chunks_y)/np.diff(across_chunks_x)
         times += across_chunks_y[0:-1]
@@ -625,8 +679,7 @@ def plot_decay(nrem_binned_rate,nrem_bins_relative_so,rem_binned_rate,rem_bins_r
         
     ax.set_title(title_)
     ax.set_xlabel('time after sleep onset (mins)')
-
-
+    
     fig,ax = plt.subplots(1, 1,figsize=(5, 5))                
     sns.regplot(x=times, y=rates, ax = ax, color = color_1,scatter_kws={'s': 160, 'alpha': 0.3,'linewidths': 0})
     sns.regplot(x=times_2, y=rates_2, ax = ax, color = color_2,scatter_kws={'s': 160, 'alpha': 0.3,'linewidths': 0})
@@ -636,8 +689,150 @@ def plot_decay(nrem_binned_rate,nrem_bins_relative_so,rem_binned_rate,rem_bins_r
     
     group1_data = {'x': times, 'y': rates}
     group2_data = {'x': times_2, 'y': rates_2}
-
     return group1_data, group2_data
+
+def pairwise_permanova_by_feature(data, group_labels, method='bonferroni', permutations=10000):
+    """
+    Perform pairwise PERMANOVA on each feature column, correcting p-values
+    across all feature×pairwise tests. For any pair where the feature is
+    constant, record statistic=0, p_value=1 instead of running PERMANOVA.
+    Returns a list of dicts:
+      feature, group1, group2, test_stat, p_value, permutations
+    """
+    unique_groups = np.unique(group_labels)
+    pairwise_combinations = list(combinations(unique_groups, 2))
+
+    results = []
+    all_pvals = []
+
+    n_features = data.shape[1]
+
+    for feat_idx in range(n_features):
+        feat = data[:, feat_idx]
+
+        for g1, g2 in pairwise_combinations:
+            mask = np.isin(group_labels, [g1, g2])
+            sub_feat = feat[mask]
+            sub_labels = group_labels[mask]
+
+            # If the feature is constant across these two groups, skip PERMANOVA:
+            if np.unique(sub_feat).size == 1:
+                stat, pval = 0.0, 1.0
+                r2 = 0
+            else:
+                # Compute distances and run PERMANOVA
+                dist_mat = squareform(pdist(sub_feat[:, None], metric='euclidean'))
+                dist_mat = np.ascontiguousarray(dist_mat)
+                ids = [str(i) for i in range(len(sub_labels))]
+                dm = DistanceMatrix(dist_mat, ids)
+                res = permanova(dm, sub_labels, permutations=permutations)
+                stat, pval = res["test statistic"], res["p-value"]
+                
+                #Compute R² manually (effect size)
+                # ss_total = sum of squared distances / n
+                D = dm.data        # <-- this is the fix
+                n = len(sub_labels)
+                ss_total = np.sum(D**2) / n
+
+                # ss_between: sum of squared group means
+                group_labels = np.array(sub_labels)
+                unique_groups = np.unique(group_labels)
+                ss_between = 0
+                for g in unique_groups:
+                    idx = np.where(group_labels == g)[0]
+                    Di = D[np.ix_(idx, idx)]
+                    ss_between += len(idx) * (Di.mean() ** 2)
+
+                r2 = ss_between / ss_total
+
+            results.append({
+                "feature": feat_idx,
+                "group1": g1,
+                "group2": g2,
+                "test_stat": stat,
+                "p_value": pval,
+                "permutations": permutations,
+                "R2": r2
+            })
+            all_pvals.append(pval)
+
+    # Multiple testing correction
+    corrected = multipletests(all_pvals, method=method)[1]
+    for i, cp in enumerate(corrected):
+        results[i]["p_value"] = cp
+        
+    return results
+
+
+def group_difference_permanova(f_warp_factors, r_warp_factors, learning_f_warp_factors, learning_r_warp_factors):
+
+    # grouping = ['control_forwards']*len(np.vstack(e_f_warp_factors)) + ['control_reverse']*len(np.vstack(e_r_warp_factors)) + ['lesion_forwards']*len(np.vstack(hl_f_warp_factors)) + ['lesion_reverse']*len(np.vstack(hl_r_warp_factors))
+    grouping = ['control']*len(np.vstack(f_warp_factors)) + ['control']*len(np.vstack(r_warp_factors)) + ['test']*len(np.vstack(learning_f_warp_factors)) + ['test']*len(np.vstack(learning_r_warp_factors))
+    # data is stacked so that each row is a sample (animal) and each colum is a variable/test
+
+    pairwise_distances = pdist(np.asarray(f_warp_factors+r_warp_factors+learning_f_warp_factors+learning_r_warp_factors), metric='euclidean')
+
+    distance_matrix = squareform(pairwise_distances)
+    dm = DistanceMatrix(distance_matrix)
+
+    # Perform PERMANOVA
+    results = permanova(dm, grouping, permutations=10000)
+    print(results)
+    
+    #Compute R² manually (effect size)
+    # ss_total = sum of squared distances / n
+    D = dm.data        # <-- this is the fix
+    n = len(grouping)
+    ss_total = np.sum(D**2) / n
+
+    # ss_between: sum of squared group means
+    group_labels = np.array(grouping)
+    unique_groups = np.unique(group_labels)
+    ss_between = 0
+    for g in unique_groups:
+        idx = np.where(group_labels == g)[0]
+        Di = D[np.ix_(idx, idx)]
+        ss_between += len(idx) * (Di.mean() ** 2)
+
+    r2 = ss_between / ss_total
+    print(f"PERMANOVA effect size R²: {r2:.5f}")
+    
+    return grouping
+
+
+# PERMANOVA forward vs reverse diff
+from skbio.stats.distance import permanova, DistanceMatrix
+from scipy.spatial.distance import pdist, squareform
+
+def permanova_forward_vs_reverse(f_warp_factors, r_warp_factors):
+    grouping = ['control_forwards']*len(np.vstack(f_warp_factors)) + ['control_reverse']*len(np.vstack(r_warp_factors))
+
+    pairwise_distances = pdist(np.asarray(f_warp_factors+r_warp_factors), metric='euclidean')
+    distance_matrix = squareform(pairwise_distances)
+    dm = DistanceMatrix(distance_matrix)
+
+    # Perform PERMANOVA
+    results = permanova(dm, grouping, permutations=10000)
+    print(results)
+    
+    #Compute R² manually (effect size)
+    # ss_total = sum of squared distances / n
+    D = dm.data        # <-- this is the fix
+    n = len(grouping)
+    ss_total = np.sum(D**2) / n
+
+    # ss_between: sum of squared group means
+    group_labels = np.array(grouping)
+    unique_groups = np.unique(group_labels)
+    ss_between = 0
+    for g in unique_groups:
+        idx = np.where(group_labels == g)[0]
+        Di = D[np.ix_(idx, idx)]
+        ss_between += len(idx) * (Di.mean() ** 2)
+
+    r2 = ss_between / ss_total
+    print(f"PERMANOVA effect size R²: {r2:.5f}")
+    
 
 def effect_size(x=None, y=None, test='ttest', dv=None, between=None, data=None,
                 dm=None, grouping=None, popmean=None, permutations=999):
@@ -678,7 +873,7 @@ def effect_size(x=None, y=None, test='ttest', dv=None, between=None, data=None,
         if popmean is None:
             raise ValueError("popmean must be provided for one-sample t-test")
         t, p = stats.ttest_1samp(x, popmean)
-        d = (x.mean() - popmean) / x.std(ddof=1)
+        d = (np.nanmean(x) - popmean) / x.std(ddof=1)
         return {"cohens_d": d}
 
     elif test == 'anova':
@@ -703,144 +898,8 @@ def effect_size(x=None, y=None, test='ttest', dv=None, between=None, data=None,
 
     else:
         raise ValueError(f"Unsupported test type: {test}")
-
-def pairwise_permanova_by_feature(data, group_labels, method='bonferroni', permutations=10000):
-    """
-    Perform pairwise PERMANOVA on each feature column, correcting p-values
-    across all feature×pairwise tests. For any pair where the feature is
-    constant, record statistic=0, p_value=1 instead of running PERMANOVA.
-    Returns a list of dicts:
-      feature, group1, group2, test_stat, p_value, permutations
-    """
-    unique_groups = np.unique(group_labels)
-    pairwise_combinations = list(combinations(unique_groups, 2))
-
-    results = []
-    all_pvals = []
-
-    n_features = data.shape[1]
-
-    for feat_idx in range(n_features):
-        feat = data[:, feat_idx]
-
-        for g1, g2 in pairwise_combinations:
-            mask = np.isin(group_labels, [g1, g2])
-            sub_feat = feat[mask]
-            sub_labels = group_labels[mask]
-
-            # If the feature is constant across these two groups, skip PERMANOVA:
-            if np.unique(sub_feat).size == 1:
-                stat, pval = 0.0, 1.0
-                r2 = 0
-            else:
-                # Compute distances and run PERMANOVA
-                dist_mat = squareform(pdist(sub_feat[:, None], metric='euclidean'))
-                dist_mat = np.ascontiguousarray(dist_mat)
-                ids = [str(i) for i in range(len(sub_labels))]
-                dm = DistanceMatrix(dist_mat, ids)
-                res = permanova(dm, sub_labels, permutations=permutations)
-                stat, pval = res["test statistic"], res["p-value"]
-                
-                    #Compute R² manually (effect size)
-                # ss_total = sum of squared distances / n
-                D = dm.data        # <-- this is the fix
-                n = len(sub_labels)
-                ss_total = np.sum(D**2) / n
-
-                # ss_between: sum of squared group means
-                group_labels = np.array(sub_labels)
-                unique_groups = np.unique(group_labels)
-                ss_between = 0
-                for g in unique_groups:
-                    idx = np.where(group_labels == g)[0]
-                    Di = D[np.ix_(idx, idx)]
-                    ss_between += len(idx) * (Di.mean() ** 2)
-
-                r2 = ss_between / ss_total
-                
-            results.append({
-                "feature": feat_idx,
-                "group1": g1,
-                "group2": g2,
-                "test_stat": stat,
-                "p_value": pval,
-                "permutations": permutations,
-                "R2": r2
-            })
-            all_pvals.append(pval)
-
-    # Multiple testing correction
-    corrected = multipletests(all_pvals, method=method)[1]
-    for i, cp in enumerate(corrected):
-        results[i]["p_value"] = cp
-
-    return results
-
-def group_difference_permanova(f_warp_factors, r_warp_factors, learning_f_warp_factors, learning_r_warp_factors):
-
-    # grouping = ['control_forwards']*len(np.vstack(e_f_warp_factors)) + ['control_reverse']*len(np.vstack(e_r_warp_factors)) + ['lesion_forwards']*len(np.vstack(hl_f_warp_factors)) + ['lesion_reverse']*len(np.vstack(hl_r_warp_factors))
-    grouping = ['control']*len(np.vstack(f_warp_factors)) + ['control']*len(np.vstack(r_warp_factors)) + ['test']*len(np.vstack(learning_f_warp_factors)) + ['test']*len(np.vstack(learning_r_warp_factors))
-    # data is stacked so that each row is a sample (animal) and each colum is a variable/test
-
-    pairwise_distances = pdist(np.asarray(f_warp_factors+r_warp_factors+learning_f_warp_factors+learning_r_warp_factors), metric='euclidean')
-
-    distance_matrix = squareform(pairwise_distances)
-    dm = DistanceMatrix(distance_matrix)
-
-    # Perform PERMANOVA
-    results = permanova(dm, grouping, permutations=10000)
-    print(results)
     
-    #Compute R² manually (effect size)
-    # ss_total = sum of squared distances / n
-    D = dm.data        # <-- this is the fix
-    n = len(grouping)
-    ss_total = np.sum(D**2) / n
-
-    # ss_between: sum of squared group means
-    group_labels = np.array(grouping)
-    unique_groups = np.unique(group_labels)
-    ss_between = 0
-    for g in unique_groups:
-        idx = np.where(group_labels == g)[0]
-        Di = D[np.ix_(idx, idx)]
-        ss_between += len(idx) * (Di.mean() ** 2)
-
-    r2 = ss_between / ss_total
-    print(f"PERMANOVA effect size R²: {r2:.5f}")
-    
-    return grouping
-
-def permanova_forward_vs_reverse(f_warp_factors, r_warp_factors):
-    grouping = ['control_forwards']*len(np.vstack(f_warp_factors)) + ['control_reverse']*len(np.vstack(r_warp_factors))
-
-    pairwise_distances = pdist(np.asarray(f_warp_factors+r_warp_factors), metric='euclidean')
-    distance_matrix = squareform(pairwise_distances)
-    dm = DistanceMatrix(distance_matrix)
-
-    # Perform PERMANOVA
-    results = permanova(dm, grouping, permutations=10000)
-    print(results)
-    
-    
-    #Compute R² manually (effect size)
-    # ss_total = sum of squared distances / n
-    D = dm.data        # <-- this is the fix
-    n = len(grouping)
-    ss_total = np.sum(D**2) / n
-
-    # ss_between: sum of squared group means
-    group_labels = np.array(grouping)
-    unique_groups = np.unique(group_labels)
-    ss_between = 0
-    for g in unique_groups:
-        idx = np.where(group_labels == g)[0]
-        Di = D[np.ix_(idx, idx)]
-        ss_between += len(idx) * (Di.mean() ** 2)
-
-    r2 = ss_between / ss_total
-    print(f"PERMANOVA effect size R²: {r2:.5f}")
-    
+import scipy
 
 def conactinate_nth_items(startlist):
     concatinated_column_vectors = []
@@ -881,6 +940,21 @@ def find_closest_example(numbers, examples):
 
     return closest_examples, example_totals
 
+def shade_spans(axs, spans, color, bin_width=1, alpha=0.2):
+    for span in spans:
+        if isinstance(span, (list, tuple, np.ndarray)):
+            start, end = span
+        else:
+            start = span - 0.5
+            end = span + 0.5
+
+        x0 = start * bin_width
+        x1 = end * bin_width
+
+        for ax in axs:
+            ax.axvspan(x0, x1, facecolor=color, alpha=alpha)
+
+
 def relative_warp_values(e_f_warp_factors):
     rels = []
     for item in e_f_warp_factors:
@@ -889,10 +963,7 @@ def relative_warp_values(e_f_warp_factors):
             rels += [list(np.array(item)/sum(item))]
     return rels
 
-
-
-
-def extract_mean_warps(regression_df, bins_):
+def extract_mean_warps(regression_df, bins_,animals_list):
 
     f_warp_factors = []
     r_warp_factors = []
@@ -903,7 +974,9 @@ def extract_mean_warps(regression_df, bins_):
     forward_total = []
     reverse_total = []
 
-    for mouse, group in regression_df.groupby('mouse'):
+    for mouse in animals_list:
+        mask = regression_df.mouse == mouse
+        group = regression_df[mask]
         #forward:
         data = list(group.warp_factor.values[group.warp_factor.values > 0])
         forward_total += [len(data)]
@@ -916,6 +989,7 @@ def extract_mean_warps(regression_df, bins_):
         closest_examples,example_totals = find_closest_example(data,bins_)
         r_warp_factors +=[list(example_totals.values())]
         reverse += [sum(example_totals.values())]
+
 
             
     f_warp_factors = relative_warp_values(f_warp_factors)
@@ -950,96 +1024,3 @@ def plot_warp_factors(ax, f_warp_factors, r_warp_factors, bins_, color_):
     ax.fill_between((range(len(bin_labels))),(lower),(upper),
         alpha=0.2, edgecolor='None', facecolor=color_,
         linewidth=1, linestyle='dashdot', antialiased=True)
-    ax.set_ylim(0,0.4)
-
-
-def plot_sleep_awake_spike_position(ax,x,y,color_):
-    # Create a pandas DataFrame
-    df = pd.DataFrame({'x': x, 'y': y})
-
-    # Define bin edges for y-values
-    bin_edges = np.linspace(0, 1, num=15)  # 5 bins from 0 to 1
-
-    # Bin the data based on y-values
-    df['bin'] = pd.cut(df['y'], bins=bin_edges)
-
-    # Calculate the middle points of the bins
-    bin_midpoints = (bin_edges[:-1] + bin_edges[1:]) / 2
-
-    # Calculate the mean and standard deviation of each bin
-    bin_means = df.groupby('bin')['x'].mean()
-    bin_std = df.groupby('bin')['x'].std()
-
-    # Plot
-
-    ax.plot(bin_midpoints,bin_means,'o-', c = color_, markersize = 8)
-    # plt.plot(bin_midpoints, bin_means, width=0.1, align='center', label='Mean')
-
-    # Fill between mean line +- standard deviation
-    plt.fill_between(bin_midpoints, bin_means - bin_std, bin_means + bin_std, color=color_, alpha=0.3)
-    
-    return bin_means.values,bin_midpoints
-
-def test_univariate_normality(x, y, alpha=0.05):
-    """
-    Performs Shapiro-Wilk and D'Agostino's tests on each axis.
-    Prints p-values and a simple verdict.
-    """
-    for name, data in (('x', x), ('y', y)):
-        W, p_sw = shapiro(data)
-        K2, p_k2 = normaltest(data)
-        print(f"--- {name}-axis ---")
-        print(f" Shapiro–Wilk:    W={W:.3f}, p={p_sw:.3f} -> {'non-normal' if p_sw<alpha else 'normal'}")
-        print(f" D’Agostino K²: K²={K2:.3f}, p={p_k2:.3f} -> {'non-normal' if p_k2<alpha else 'normal'}\n")
-        
-def print_permanova_for_awake_sleep_neuron_positions(x, y, x2, y2, permutations=999):
-    """
-    Perform PERMANOVA (adonis) on two groups of 2D points using scikit-bio.
-    Prints the pseudo-F, p-value, and effect size R².
-
-    Requires: pip install scikit-bio
-    """
-    # 1) Stack coordinates
-    coords = np.vstack([
-        np.column_stack([x, y]),
-        np.column_stack([x2, y2])
-    ])
-
-    # 2) Compute the Euclidean distance matrix
-    dist_array = squareform(pdist(coords, metric='euclidean'))
-
-    # 3) Create sample IDs and grouping vector
-    ids = [f"A{i+1}" for i in range(len(x))] + [f"B{i+1}" for i in range(len(x2))]
-    grouping = ['A'] * len(x) + ['B'] * len(x2)
-
-    # 4) Build a scikit-bio DistanceMatrix
-    dm = DistanceMatrix(dist_array, ids)
-
-    # 5) Run PERMANOVA
-    result = permanova(distance_matrix=dm,
-                       grouping=grouping,
-                       permutations=permutations)
-
-    # 6) Compute R² manually (effect size)
-    # ss_total = sum of squared distances / n
-    D = dm.data        # <-- this is the fix
-    n = len(grouping)
-    ss_total = np.sum(D**2) / n
-
-    # ss_between: sum of squared group means
-    group_labels = np.array(grouping)
-    unique_groups = np.unique(group_labels)
-    ss_between = 0
-    for g in unique_groups:
-        idx = np.where(group_labels == g)[0]
-        Di = D[np.ix_(idx, idx)]
-        ss_between += len(idx) * (Di.mean() ** 2)
-
-    r2 = ss_between / ss_total
-
-    print('***************************************************')
-    print(result)
-    # 7) Print summary
-    print(f"PERMANOVA pseudo-F: {result['test statistic']:.5f}")
-    print(f"PERMANOVA p-value: {result['p-value']:.5f}")
-    print(f"PERMANOVA effect size R²: {r2:.5f}")

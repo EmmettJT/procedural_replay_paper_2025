@@ -71,6 +71,7 @@ def load_h5(filename):
 
     with h5py.File(filename, 'r') as f:
         return {key: load_item(f[key]) for key in f.keys()}
+    
 def convert_loaded_data(data):
     """
     Recursively convert HDF5-loaded data to Python-friendly types:

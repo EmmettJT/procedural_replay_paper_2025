@@ -18,6 +18,233 @@ from scipy.stats import ttest_1samp
 import scipy
 import statsmodels.api as sm
 from pathlib import Path
+import h5py
+from collections import defaultdict
+
+def load_h5(filename):
+    def decode_and_convert(x):
+        if isinstance(x, bytes):
+            x = x.decode('utf-8')
+        if isinstance(x, str):
+            try:
+                return float(x)
+            except ValueError:
+                return x
+        return x
+    def load_item(obj):
+        # -------------------------------------------------------------
+        # GROUP HANDLING
+        # -------------------------------------------------------------
+        if isinstance(obj, h5py.Group):
+            # --- DataFrame detection ---
+            if "data" in obj and "columns" in obj.attrs:
+                cols = [c.decode("utf-8") for c in obj.attrs["columns"]]
+                raw = obj["data"][()]
+                conv = np.array(
+                    [[decode_and_convert(cell) for cell in row] for row in raw]
+                )
+                return pd.DataFrame(conv, columns=cols)
+
+            # --- List group detection ---
+            keys = list(obj.keys())
+            if keys and all(k.isdigit() for k in keys):
+                return [load_item(obj[k]) for k in sorted(keys, key=int)]
+
+            # --- Regular dict ---
+            return {k: load_item(obj[k]) for k in keys}
+        # -------------------------------------------------------------
+        # DATASET HANDLING
+        # -------------------------------------------------------------
+        elif isinstance(obj, h5py.Dataset):
+            data = obj[()]
+            # --- Scalar bytes ---
+            if isinstance(data, bytes):
+                return decode_and_convert(data)
+            # --- Scalar string ---
+            if isinstance(data, str):
+                return decode_and_convert(data)
+            # --- Scalar numeric ---
+            if not isinstance(data, np.ndarray):
+                return data
+            # --- Array of bytes or objects ---
+            if data.dtype.kind in {"S", "O"}:
+                flat = np.array([decode_and_convert(x) for x in data.flat])
+                if flat.ndim == 1:
+                    return flat.tolist()
+                return flat.reshape(data.shape)
+            # --- Numeric array ---
+            return data
+        return obj
+    with h5py.File(filename, "r") as f:
+        return {k: load_item(f[k]) for k in f.keys()}
+    
+def plot_ordered_misrodered(nrem_ordered_misordered,var_string,var_string2, color_):
+
+    ordered = [item[0] for item in nrem_ordered_misordered]
+    misordered = [item[1] for item in nrem_ordered_misordered]
+
+    fig, ax = plt.subplots(figsize=(2, 5))
+
+    ax.plot(np.zeros(len(ordered)), ordered, 'o', color = color_,alpha = 0.4, markeredgewidth = 0, markersize = 9)
+    ax.boxplot([x for x in ordered if not np.isnan(x)], positions=[0.3], widths=0.1, patch_artist=True, boxprops=dict(facecolor=color_, color=color_), medianprops=dict(color='#FED163'))
+    ax.plot(np.ones(len(misordered)), misordered, 'o', color = color_,alpha = 0.4, markeredgewidth = 0, markersize = 9)
+    ax.boxplot([x for x in misordered if not np.isnan(x)], positions=[0.7], widths=0.1, patch_artist=True, boxprops=dict(facecolor=color_, color=color_), medianprops=dict(color='#FED163'))
+
+    ax.set_ylabel(var_string2)
+    
+    ax.set_title(var_string)
+    ax.set_ylim(0, 1)
+    
+
+def words_to_number(s):
+    """
+    Convert words like 'one', 'twenty_one', 'thirty_five' back to integer.
+    Supports 1–99.
+    """
+    ones = {
+        'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+        'six': 6, 'seven': 7, 'eight': 8, 'nine': 9,
+        'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13,
+        'fourteen': 14, 'fifteen': 15, 'sixteen': 16, 'seventeen': 17,
+        'eighteen': 18, 'nineteen': 19
+    }
+    tens = {
+        'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50,
+        'sixty': 60, 'seventy': 70, 'eighty': 80, 'ninety': 90
+    }
+
+    if '_' in s:
+        t, o = s.split('_')
+        return tens[t] + ones[o]
+    if s in ones:
+        return ones[s]
+    if s in tens:
+        return tens[s]
+    raise ValueError(f"Cannot convert word '{s}' to number")
+
+def convert_word_keys_to_numeric(d):
+    """
+    Recursively convert dict keys from words back to numeric keys.
+    """
+    if isinstance(d, dict):
+        new_dict = {}
+        for k, v in d.items():
+            # Only convert keys that are words
+            try:
+                new_key = words_to_number(k)
+            except ValueError:
+                new_key = k  # leave non-numeric-word keys unchanged
+            new_dict[new_key] = convert_word_keys_to_numeric(v)
+        return new_dict
+    elif isinstance(d, list):
+        return [convert_word_keys_to_numeric(x) for x in d]
+    else:
+        return d
+
+def return_binned_neuron_awake_sleep_rel(awake_dat,sleep_dat):
+    awake_sleep_relationship = {}
+    for index_, item, in enumerate(awake_dat):
+        for index, awake_mouse_data in enumerate(item):
+
+            awake = awake_mouse_data
+            sleep = np.array(sleep_dat[index_][index])
+
+            min_neurons_filter = 0
+            bins = [0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]    
+
+            for bin_ in bins:
+                mask = np.round(awake,1) == bin_
+                if len(sleep[mask]) > min_neurons_filter:
+                    if bin_ in awake_sleep_relationship:
+                        awake_sleep_relationship[bin_] += [np.mean(sleep[mask])]
+                    else:
+                        awake_sleep_relationship[bin_] = [np.mean(sleep[mask])]
+
+    return awake_sleep_relationship
+
+
+def plot_awake_sleep_relationship(awake_sleep_relationship,color_,ax):
+
+    keys = []
+    e_means = []
+    sem = []
+    for key in awake_sleep_relationship:
+        if len(awake_sleep_relationship[key]) > 0:
+            keys += [key]
+    #         ax.plot([key]* len(e_awake_sleep_relationship[key]),e_awake_sleep_relationship[key],'o', color = 'red')
+
+            a_s_relationship = [x for x in awake_sleep_relationship[key] if not np.isnan(x)]
+
+            e_means += [np.mean(a_s_relationship)]
+            sem += [scipy.stats.tstd(a_s_relationship)]
+    ax.plot(sorted(keys),np.array(e_means)[np.argsort(keys)],'o--', c = color_, alpha = 1, markeredgewidth = 0, markersize = 10)
+
+    upper = np.array(e_means)[np.argsort(keys)] + sem
+    lower = np.array(e_means)[np.argsort(keys)] - sem
+    ax.fill_between(sorted(keys),(lower),(upper),
+        alpha=0.2, edgecolor='None', facecolor=color_,
+        linewidth=1, linestyle='dashdot', antialiased=True)
+
+    x = np.linspace(0, 1, 10)  # Example x values
+    y = x  # Since x equals y, y values are the same as x values
+    plt.plot(x,y,'--')
+    
+    ax.set_ylim(0,0.8)
+    ax.set_ylabel('replay proportion involvement')
+    ax.set_xlabel('awake proportion involvement')
+
+    #################################################
+
+    from scipy.optimize import curve_fit
+    from scipy.stats import t
+
+    # Extract the bins and corresponding values
+    bins = list(awake_sleep_relationship.keys())
+    
+    bin_centers = np.array(bins)[np.argsort(bins)]
+    values = np.array([np.nanmean(awake_sleep_relationship[bin]) for bin in bins])[np.argsort(bins)]
+
+    # Define the exponential function
+    def exponential_model(x, a, b):
+        return a * np.exp(b * x)
+
+    # Fit the model to the data
+    popt, pcov = curve_fit(exponential_model, bin_centers, values)
+
+    # Extract the fitting parameters
+    a, b = popt
+
+    # Calculate the fitted values
+    fitted_values = exponential_model(bin_centers, *popt)
+
+    # Calculate R-squared
+    residuals = values - fitted_values
+    ss_res = np.sum(residuals**2)
+    ss_tot = np.sum((values - np.mean(values))**2)
+    r_squared = 1 - (ss_res / ss_tot)
+
+    # Degrees of freedom
+    dof = max(0, len(bin_centers) - len(popt))
+
+    # Calculate standard errors of the parameters
+    perr = np.sqrt(np.diag(pcov))
+
+    # Calculate t-values for the parameters
+    t_values = popt / perr
+
+    # Calculate p-values for the parameters
+    p_values = [2 * (1 - t.cdf(np.abs(t_val), dof)) for t_val in t_values]
+
+    print(f'Fitted parameters: a = {a}, b = {b}')
+    print(f'R-squared: {r_squared}')
+    print(f'p-values: {p_values}')
+
+
+    # Plot the original data and the fitted curve
+    # plt.scatter(bin_centers, values, label='Data')
+    plt.plot(bin_centers, fitted_values, label='Fitted curve', color='red', alpha = 0.4)
+    plt.xlabel('Bin Center')
+    plt.ylabel('Value')
 
 def extract_start_end_points(start_end_df):
     all_chunk_forward_start_mean = []

@@ -15,64 +15,62 @@ import h5py
 from pathlib import Path
 
 def load_h5(filename):
+    def decode_and_convert(x):
+        if isinstance(x, bytes):
+            x = x.decode('utf-8')
+        if isinstance(x, str):
+            try:
+                return float(x)
+            except ValueError:
+                return x
+        return x
     def load_item(obj):
-        # -------- GROUP --------
+        # -------------------------------------------------------------
+        # GROUP HANDLING
+        # -------------------------------------------------------------
         if isinstance(obj, h5py.Group):
+            # --- DataFrame detection ---
+            if "data" in obj and "columns" in obj.attrs:
+                cols = [c.decode("utf-8") for c in obj.attrs["columns"]]
+                raw = obj["data"][()]
+                conv = np.array(
+                    [[decode_and_convert(cell) for cell in row] for row in raw]
+                )
+                return pd.DataFrame(conv, columns=cols)
+
+            # --- List group detection ---
             keys = list(obj.keys())
+            if keys and all(k.isdigit() for k in keys):
+                return [load_item(obj[k]) for k in sorted(keys, key=int)]
 
-            # ---- Nested dict or DataFrame ----
-            # Try to detect DataFrame: all keys are datasets
-            if keys and all(isinstance(obj[k], h5py.Dataset) for k in keys):
-                data = {}
-                lengths = set()
-
-                for k in keys:
-                    dset = obj[k]
-                    # Handle vlen / jagged datasets
-                    if dset.dtype.kind == "O":
-                        col = [np.array(x) if isinstance(x, (list, np.ndarray)) else x for x in dset[()]]
-                    elif dset.dtype.kind in {"S"}:
-                        col = dset[()].astype(str).tolist()
-                    else:
-                        col = dset[()]
-
-                    data[k] = col
-                    # record length for DataFrame detection
-                    if hasattr(col, "__len__"):
-                        lengths.add(len(col))
-                    else:
-                        lengths.add(1)
-
-                # All columns same length → DataFrame
-                if len(lengths) == 1:
-                    return pd.DataFrame(data, columns=keys)
-                else:
-                    # jagged / variable length → keep as dict
-                    return data
-
-            # ---- Nested dictionary ----
-            return {k: load_item(obj[k]) for k in obj.keys()}
-
-        # -------- DATASET --------
+            # --- Regular dict ---
+            return {k: load_item(obj[k]) for k in keys}
+        # -------------------------------------------------------------
+        # DATASET HANDLING
+        # -------------------------------------------------------------
         elif isinstance(obj, h5py.Dataset):
             data = obj[()]
-
-            # vlen numeric arrays
-            if obj.dtype.kind == "O":
-                return [np.array(x) if isinstance(x, (list, np.ndarray)) else x for x in data]
-
-            # strings
-            if obj.dtype.kind in {"S"}:
-                return data.astype(str).tolist() if data.ndim == 1 else data
-
-            # numeric
+            # --- Scalar bytes ---
+            if isinstance(data, bytes):
+                return decode_and_convert(data)
+            # --- Scalar string ---
+            if isinstance(data, str):
+                return decode_and_convert(data)
+            # --- Scalar numeric ---
+            if not isinstance(data, np.ndarray):
+                return data
+            # --- Array of bytes or objects ---
+            if data.dtype.kind in {"S", "O"}:
+                flat = np.array([decode_and_convert(x) for x in data.flat])
+                if flat.ndim == 1:
+                    return flat.tolist()
+                return flat.reshape(data.shape)
+            # --- Numeric array ---
             return data
-
-        else:
-            return obj
-
+        return obj
     with h5py.File(filename, "r") as f:
         return {k: load_item(f[k]) for k in f.keys()}
+    
 
 def get_percentage_points(resampled_curve, percentages):
     """
