@@ -103,7 +103,7 @@ def plot_method_warp(
         alpha_line=0.4,
     )
 
-def extract_stats_inputs(df_dict):
+def extract_stats_inputs(df_dict,standard_insertion,standard_insertion_mislabeled,decoder_standard_insertion,decoder_standard_insertion_mislabeled,decoder2_standard_insertion,decoder2_standard_insertion_mislabeled):
     """
     Extract found + mislabelled data for stats
     """
@@ -428,8 +428,6 @@ def plot_method(
     )
     
     
-
-
 def load_h5(filename):
     def decode_and_convert(x):
         if isinstance(x, bytes):
